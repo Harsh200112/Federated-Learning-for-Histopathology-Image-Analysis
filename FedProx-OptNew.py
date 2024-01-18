@@ -1,3 +1,4 @@
+# Importing Libraries
 import torch
 import torch.nn as nn
 import torchmetrics
@@ -9,6 +10,7 @@ from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from torchvision import datasets
 
+# Device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(device)
 
@@ -20,6 +22,7 @@ c_epochs = 10
 num_clients = 3
 mu = 0.01
 
+# Preprocessing
 transforms = transforms.Compose([
     transforms.Resize((image_size, image_size)),
     transforms.ToTensor(),
@@ -93,6 +96,7 @@ class InvertedResidual(nn.Module):
             return self.conv(x)
 
 
+# Train, Test, Validation Splitting
 def train_test_ds(data, test_split=0.3):
     train_idx, val_idx = train_test_split(list(range(len(data))), test_size=test_split)
     train_data = Subset(data, train_idx)
@@ -123,6 +127,7 @@ for i in range(num_clients):
     c_train_loaders.append(loader)
 
 
+# Accuracy, Auroc, F1-Scre Calculation
 def get_accuracy(model, data):
     num_correct = 0
     num_samples = 0
@@ -171,6 +176,8 @@ def get_client_models(num_clients):
 
     return models, optimizers, criterions
 
+
+# Validation Loss Calculation
 def get_val_loss(model, criterion, data, server):
     model.eval()
     with torch.no_grad():
@@ -205,10 +212,12 @@ def update_centralized_model(cent_model, models, num_clients):
     return cent_model
 
 
+# Finding the Rank of Layers important in predicting the final outcome
 def get_ranked_layers(clients, num_clients, c_train_loaders):
     for no in range(num_clients):
         model_name = "model" + str(no)
         model = clients[model_name]
+        layers = ['Conv Block-1', 'Inverted Residual Block-1', 'Inverted Residual Block-2', 'Conv Block-2']
         target_layers = [[model.model[0].conv[-1]], [model.model[1].conv[-1]], [model.model[2].conv[-1]],
                          [model.model[3].conv[-1]]]
         ranked_layers = []
@@ -238,9 +247,9 @@ def get_ranked_layers(clients, num_clients, c_train_loaders):
                             mse += 0.5 * ((grayscale_cam1 - grayscale_cam2) / (
                                         len(grayscale_cam1) * len(grayscale_cam2))).sum() ** 2
                             # print(mse)
-            ranked_layers.append((mse, layer_no))
+            ranked_layers.append((mse, layers[layer_no]))
             layer_no += 1
-        print(target_layers.sort())
+        print(ranked_layers.sort())
         print()
 
 
