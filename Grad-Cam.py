@@ -12,7 +12,7 @@ model.load_state_dict(torch.load('Trained Weights/proxopt_corr_trained_weights.p
 
 print(model)
 
-target_layers = [model.model[3].conv[-1]]
+target_layers = [model.avgpool]
 
 image_path = "Bracs/Benign/BRACS_264_N_1.jpg"
 input_image = Image.open(image_path)

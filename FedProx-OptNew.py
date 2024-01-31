@@ -10,6 +10,9 @@ from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from torchvision import datasets
 
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
 # Device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(device)
@@ -122,7 +125,7 @@ for i in range(num_clients):
     end_idx = (i + 1) * data_loader_size if i < num_clients - 1 else len(train_data)
 
     subset = Subset(train_data, list(range(start_idx, end_idx)))
-    loader = DataLoader(subset, batch_size=32, shuffle=True)
+    loader = DataLoader(subset, batch_size=batch_size, shuffle=True)
 
     c_train_loaders.append(loader)
 
@@ -198,6 +201,7 @@ def get_val_loss(model, criterion, data, server):
 # Setting the Main Model Parameters
 def update_centralized_model(cent_model, models, num_clients):
     target_state_dict = cent_model.state_dict()
+    temp_state_dict = cent_model.state_dict()
 
     for key in target_state_dict:
         if target_state_dict[key].data.dtype == torch.float32:
@@ -206,7 +210,11 @@ def update_centralized_model(cent_model, models, num_clients):
                 model_name = "model" + str(i)
                 model = models[model_name]
                 state_dict = model.state_dict()
-                target_state_dict[key].data += state_dict[key].data.clone()/num_clients
+                target_state_dict[key].data += state_dict[key].data.clone() / num_clients
+                if i==0:
+                    target_state_dict[key].grad = (state_dict[key].data.clone() - temp_state_dict[key].data.clone()) / num_clients
+                else:
+                    target_state_dict[key].grad += (state_dict[key].data.clone() - temp_state_dict[key].data.clone()) / num_clients
 
     cent_model.load_state_dict(target_state_dict)
     return cent_model
@@ -217,23 +225,23 @@ def get_ranked_layers(clients, num_clients, c_train_loaders):
     for no in range(num_clients):
         model_name = "model" + str(no)
         model = clients[model_name]
-        layers = ['Conv Block-1', 'Inverted Residual Block-1', 'Inverted Residual Block-2', 'Conv Block-2']
-        target_layers = [[model.model[0].conv[-1]], [model.model[1].conv[-1]], [model.model[2].conv[-1]],
-                         [model.model[3].conv[-1]]]
+        layers = ['Conv Block-1', 'Inverted Residual Block-1 1st Conv', 'Inverted Residual Block-1 2nd Conv', 'Inverted Residual Block-2 1st Conv', 'Inverted Residual Block-2 2nd Conv', 'Inverted Residual Block-2 3rd Conv', 'Conv Block-2', 'Avg Pool']
+        target_layers = [[model.model[0].conv[0]], [model.model[1].conv[0]], [model.model[1].conv[3]], [model.model[2].conv[0]], [model.model[2].conv[3]],
+                         [model.model[2].conv[6]], [model.model[3].conv[0]], [model.avgpool]]
         ranked_layers = []
 
-        print("----Ranked Layers For Client", no,"----")
+        print("----Ranked Layers For Client", no+1,"----")
         layer_no = 0
         for layer in target_layers:
             mse = 0
             for x, y in c_train_loaders[no]:
                 x = x.to(device)
                 y = y.to(device)
-                for i in range(8):
+                for i in range(batch_size):
                     for l, k in c_train_loaders[no]:
                         l = l.to(device)
                         k = k.to(device)
-                        for j in range(8):
+                        for j in range(batch_size):
                             cam = GradCAM(model=model, target_layers=layer)
                             target1 = [ClassifierOutputTarget(y[i])]
                             target2 = [ClassifierOutputTarget(k[j])]
@@ -244,12 +252,15 @@ def get_ranked_layers(clients, num_clients, c_train_loaders):
                             grayscale_cam1 = grayscale_cam1[0, :]
                             grayscale_cam2 = grayscale_cam2[0, :]
 
-                            mse += 0.5 * ((grayscale_cam1 - grayscale_cam2) / (
+                            mse += 1/batch_size * ((grayscale_cam1 - grayscale_cam2) / (
                                         len(grayscale_cam1) * len(grayscale_cam2))).sum() ** 2
                             # print(mse)
+                        break
+                break
             ranked_layers.append((mse, layers[layer_no]))
+            ranked_layers.sort(reverse=True)
             layer_no += 1
-        print(ranked_layers.sort())
+        print(ranked_layers)
         print()
 
 
@@ -341,6 +352,7 @@ for i in range(num_communications):
     acc, f1_sc, auroc = get_accuracy(cent_model, test_loader)
     print("Communication", i + 2, "| Test Accuracy =", acc, "| F1-Score =", f1_sc, "| Auroc Score =", auroc)
 
+models = update_client_models(cent_model, models, num_clients)
 get_ranked_layers(models, num_clients, c_train_loaders)
 
 print("---Client Models---")

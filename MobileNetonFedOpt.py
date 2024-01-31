@@ -214,9 +214,9 @@ def update_centralized_model(cent_model, models, num_clients):
                 state_dict = model.state_dict()
                 target_state_dict[key].data += state_dict[key].data.clone() / num_clients
                 if i==0:
-                    target_state_dict[key].grad = (temp_state_dict[key].data.clone() - state_dict[key].data.clone()) / num_clients
+                    target_state_dict[key].grad = (state_dict[key].data.clone() - temp_state_dict[key].data.clone()) / num_clients
                 else:
-                    target_state_dict[key].grad += (temp_state_dict[key].data.clone() - state_dict[key].data.clone()) / num_clients
+                    target_state_dict[key].grad += (state_dict[key].data.clone() - temp_state_dict[key].data.clone()) / num_clients
 
     cent_model.load_state_dict(target_state_dict)
     return cent_model

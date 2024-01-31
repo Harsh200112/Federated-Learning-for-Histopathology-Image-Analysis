@@ -29,7 +29,7 @@ dataset = datasets.ImageFolder('Overall-Dataset', transform=transforms)
 
 classes = dataset.classes
 
-print(classes)
+# print(classes)
 
 
 def train_test_ds(data, test_split=0.3):
@@ -52,33 +52,45 @@ val_loader = DataLoader(val_data, batch_size=batch_size)
 model = MobileNetV2(2).to(device)
 model.load_state_dict(torch.load('Trained Weights/proxopt_corr_trained_weights.pt', map_location=device))
 
-print(model)
+# print(model)
 
-target_layers = [[model.model[0].conv[-1]], [model.model[1].conv[-1]], [model.model[2].conv[-1]], [model.model[3].conv[-1]]]
+# print(target_layers)
 
-print(target_layers)
+layers = ['Conv Block-1', 'Inverted Residual Block-1 1st Conv', 'Inverted Residual Block-1 2nd Conv', 'Inverted Residual Block-2 1st Conv', 'Inverted Residual Block-2 2nd Conv', 'Inverted Residual Block-2 3rd Conv', 'Conv Block-2', 'Avg Pool']
+target_layers = [[model.model[0].conv[0]], [model.model[1].conv[0]], [model.model[1].conv[3]], [model.model[2].conv[0]], [model.model[2].conv[3]],
+                 [model.model[2].conv[6]], [model.model[3].conv[0]], [model.avgpool]]
+ranked_layers = []
 
-# for layer in target_layers:
-#     mse = 0
-#     for x, y in val_loader:
-#         x = x.to(device)
-#         y = y.to(device)
-#         for i in range(8):
-#             for l, k in val_loader:
-#                 l = l.to(device)
-#                 k = k.to(device)
-#                 for j in range(8):
-#                     cam = GradCAM(model=model, target_layers=layer)
-#                     target1 = [ClassifierOutputTarget(y[i])]
-#                     target2 = [ClassifierOutputTarget(k[j])]
-#
-#                     grayscale_cam1 = cam(input_tensor=x[i].unsqueeze(0), targets=target1)
-#                     grayscale_cam2 = cam(input_tensor=l[j].unsqueeze(0), targets=target2)
-#
-#                     grayscale_cam1 = grayscale_cam1[0, :]
-#                     grayscale_cam2 = grayscale_cam2[0, :]
-#
-#                     mse += 0.5 * ((grayscale_cam1 - grayscale_cam2)/(len(grayscale_cam1) * len(grayscale_cam2))).sum()**2
-#                     # print(mse)
-#
-#     print(mse)
+print("----Ranked Layers For Client", 1,"----")
+layer_no = 0
+for layer in target_layers:
+    mse = 0
+    for x, y in val_loader:
+        x = x.to(device)
+        y = y.to(device)
+        for i in range(batch_size):
+            for l, k in val_loader:
+                l = l.to(device)
+                k = k.to(device)
+                for j in range(batch_size):
+                    cam = GradCAM(model=model, target_layers=layer)
+                    target1 = [ClassifierOutputTarget(y[i])]
+                    target2 = [ClassifierOutputTarget(k[j])]
+
+                    grayscale_cam1 = cam(input_tensor=x[i].unsqueeze(0), targets=target1)
+                    grayscale_cam2 = cam(input_tensor=l[j].unsqueeze(0), targets=target2)
+
+                    grayscale_cam1 = grayscale_cam1[0, :]
+                    grayscale_cam2 = grayscale_cam2[0, :]
+
+                    mse += 1/batch_size * ((grayscale_cam1 - grayscale_cam2) / (
+                                len(grayscale_cam1) * len(grayscale_cam2))).sum() ** 2
+                    # print(mse)
+                break
+        break
+    ranked_layers.append((mse, layers[layer_no]))
+    ranked_layers.sort(reverse=True)
+    layer_no += 1
+print(ranked_layers)
+print()
+
