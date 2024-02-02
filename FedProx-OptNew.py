@@ -36,6 +36,7 @@ dataset = datasets.ImageFolder('Overall-Dataset', transform=transforms)
 
 classes = dataset.classes
 
+
 # Model
 class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1):
@@ -48,6 +49,7 @@ class ConvBlock(nn.Module):
 
     def forward(self, x):
         return self.conv(x)
+
 
 class MobileNetV2(nn.Module):
     def __init__(self, num_classes=2):
@@ -68,6 +70,7 @@ class MobileNetV2(nn.Module):
         x = x.view(x.size(0), -1)
         x = self.fc(x)
         return x
+
 
 class InvertedResidual(nn.Module):
     def __init__(self, in_channels, out_channels, t, stride):
@@ -109,7 +112,7 @@ def train_test_ds(data, test_split=0.3):
 
 
 train_data, x_data = train_test_ds(dataset)
-test_data, val_data = train_test_ds(x_data, 1/3)
+test_data, val_data = train_test_ds(x_data, 1 / 3)
 
 
 class DataLoaderWrapper(DataLoader):
@@ -217,10 +220,12 @@ def update_centralized_model(cent_model, models, num_clients):
                 model = models[model_name]
                 state_dict = model.state_dict()
                 target_state_dict[key].data += state_dict[key].data.clone() / num_clients
-                if i==0:
-                    target_state_dict[key].grad = (state_dict[key].data.clone() - temp_state_dict[key].data.clone()) / num_clients
+                if i == 0:
+                    target_state_dict[key].grad = (state_dict[key].data.clone() - temp_state_dict[
+                        key].data.clone()) / num_clients
                 else:
-                    target_state_dict[key].grad += (state_dict[key].data.clone() - temp_state_dict[key].data.clone()) / num_clients
+                    target_state_dict[key].grad += (state_dict[key].data.clone() - temp_state_dict[
+                        key].data.clone()) / num_clients
 
     cent_model.load_state_dict(target_state_dict)
     return cent_model
@@ -231,12 +236,15 @@ def get_ranked_layers(clients, num_clients, c_train_loaders):
     for no in range(num_clients):
         model_name = "model" + str(no)
         model = clients[model_name]
-        layers = ['Conv Block-1', 'Inverted Residual Block-1 1st Conv', 'Inverted Residual Block-1 2nd Conv', 'Inverted Residual Block-2 1st Conv', 'Inverted Residual Block-2 2nd Conv', 'Inverted Residual Block-2 3rd Conv', 'Conv Block-2', 'Avg Pool']
-        target_layers = [[model.model[0].conv[0]], [model.model[1].conv[0]], [model.model[1].conv[3]], [model.model[2].conv[0]], [model.model[2].conv[3]],
+        layers = ['Conv Block-1', 'Inverted Residual Block-1 1st Conv', 'Inverted Residual Block-1 2nd Conv',
+                  'Inverted Residual Block-2 1st Conv', 'Inverted Residual Block-2 2nd Conv',
+                  'Inverted Residual Block-2 3rd Conv', 'Conv Block-2', 'Avg Pool']
+        target_layers = [[model.model[0].conv[0]], [model.model[1].conv[0]], [model.model[1].conv[3]],
+                         [model.model[2].conv[0]], [model.model[2].conv[3]],
                          [model.model[2].conv[6]], [model.model[3].conv[0]], [model.avgpool]]
         ranked_layers = []
 
-        print("----Ranked Layers For Client", no+1,"----")
+        print("----Ranked Layers For Client", no + 1, "----")
         layer_no = 0
         for layer in target_layers:
             mse = 0
@@ -258,8 +266,8 @@ def get_ranked_layers(clients, num_clients, c_train_loaders):
                             grayscale_cam1 = grayscale_cam1[0, :]
                             grayscale_cam2 = grayscale_cam2[0, :]
 
-                            mse += 1/batch_size * ((grayscale_cam1 - grayscale_cam2) / (
-                                        len(grayscale_cam1) * len(grayscale_cam2))).sum() ** 2
+                            mse += 1 / batch_size * ((grayscale_cam1 - grayscale_cam2) / (
+                                    len(grayscale_cam1) * len(grayscale_cam2))).sum() ** 2
                             # print(mse)
                         break
                 break
@@ -313,15 +321,15 @@ def train_clients(num_clients, server, models, optimizers, criterions):
 
             val_loss = get_val_loss(model, criterion, val_loader, server)
 
-            if i==0:
+            if i == 0:
                 valida_loss_c1.append(val_loss)
                 traini_loss_c1.append(running_loss / len(c_train_loaders[i]))
 
-            if i==1:
+            if i == 1:
                 valida_loss_c2.append(val_loss)
                 traini_loss_c2.append(running_loss / len(c_train_loaders[i]))
 
-            if i==2:
+            if i == 2:
                 valida_loss_c3.append(val_loss)
                 traini_loss_c3.append(running_loss / len(c_train_loaders[i]))
 
