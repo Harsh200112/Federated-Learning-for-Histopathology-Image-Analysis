@@ -29,7 +29,7 @@ mu = 0.01
 transforms = transforms.Compose([
     transforms.Resize((image_size, image_size)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
 dataset = datasets.ImageFolder('Overall-Dataset', transform=transforms)
@@ -111,10 +111,16 @@ def train_test_ds(data, test_split=0.3):
 train_data, x_data = train_test_ds(dataset)
 test_data, val_data = train_test_ds(x_data, 1/3)
 
+
+class DataLoaderWrapper(DataLoader):
+    def __iter__(self):
+        return ((key.to(device), value.to(device)) for key, value in super().__iter__())
+
+
 # DataLoaders
-train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
-test_loader = DataLoader(test_data, batch_size=batch_size)
-val_loader = DataLoader(val_data, batch_size=batch_size)
+train_loader = DataLoaderWrapper(train_data, batch_size=batch_size, shuffle=True, pin_memory=True)
+test_loader = DataLoaderWrapper(test_data, batch_size=batch_size, pin_memory=True)
+val_loader = DataLoaderWrapper(val_data, batch_size=batch_size, pin_memory=True)
 
 # Client Data Loaders
 c_train_loaders = []

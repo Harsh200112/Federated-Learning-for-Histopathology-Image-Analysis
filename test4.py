@@ -52,8 +52,20 @@ val_loader = DataLoader(val_data, batch_size=batch_size)
 model = MobileNetV2(2).to(device)
 model.load_state_dict(torch.load('Trained Weights/proxopt_corr_trained_weights.pt', map_location=device))
 
-# print(model)
 
+print(model)
+
+# print(model.state_dict().keys())
+#
+# layers = []
+#
+# for key in model.state_dict():
+#     if key[:14] not in layers:
+#         layers.append(key[:14])
+#
+# print(layers)
+#
+# print(type(model.model[0].conv[1]))
 # print(target_layers)
 
 layers = ['Conv Block-1', 'Inverted Residual Block-1 1st Conv', 'Inverted Residual Block-1 2nd Conv', 'Inverted Residual Block-2 1st Conv', 'Inverted Residual Block-2 2nd Conv', 'Inverted Residual Block-2 3rd Conv', 'Conv Block-2', 'Avg Pool']
@@ -90,7 +102,10 @@ for layer in target_layers:
         break
     ranked_layers.append((mse, layers[layer_no]))
     ranked_layers.sort(reverse=True)
+
     layer_no += 1
 print(ranked_layers)
 print()
 
+
+print('Conv Block-1' in ranked_layers)
