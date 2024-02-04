@@ -179,7 +179,7 @@ def get_client_models(num_clients):
         models.update({modelName: model})
 
         optim_name = "optim" + str(i)
-        optimizer = optim.SGD(model.parameters(), lr=clr, momentum=0.9)
+        optimizer = optim.Adam(model.parameters(), lr=clr)
         optimizers.update({optim_name: optimizer})
 
         criterion_name = "criterion" + str(i)
@@ -350,7 +350,7 @@ models, optimizers, criterions = get_client_models(num_clients)
 
 # Centralized Model
 cent_model = MobileNetV2(2).to(device)
-cent_optimizier = optim.Adagrad(cent_model.parameters(), lr=clr)
+cent_optimizier = optim.Adam(cent_model.parameters(), lr=clr)
 cent_model = update_centralized_model(cent_model, models, num_clients)
 num_communications = 9
 
@@ -359,6 +359,7 @@ acc, f1_sc, auroc = get_accuracy(cent_model, test_loader)
 print("Communication", 1, "| Test Accuracy =", acc, "| F1-Score =", f1_sc, "| Auroc Score =", auroc)
 
 for i in range(num_communications):
+    cent_model.train()
     models = update_client_models(cent_model, models, num_clients)
     train_clients(num_clients, cent_model, models, optimizers, criterions)
     cent_model = update_centralized_model(cent_model, models, num_clients)

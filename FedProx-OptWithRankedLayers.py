@@ -1,7 +1,10 @@
 # Importing Libraries
 import torch
+import numpy as np
 import torch.nn as nn
 import torchmetrics
+from tqdm import tqdm
+from functools import reduce
 import torch.optim as optim
 from torchvision.transforms import transforms
 from torch.utils.data import DataLoader, Subset
@@ -24,13 +27,13 @@ clr = 3e-4
 c_epochs = 10
 num_clients = 3
 mu = 0.01
-k = 8  # top ranked Layers
+k = 8
 
 # Preprocessing
 transforms = transforms.Compose([
     transforms.Resize((image_size, image_size)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
 dataset = datasets.ImageFolder('Overall-Dataset', transform=transforms)
@@ -115,10 +118,16 @@ def train_test_ds(data, test_split=0.3):
 train_data, x_data = train_test_ds(dataset)
 test_data, val_data = train_test_ds(x_data, 1 / 3)
 
+
+class DataLoaderWrapper(DataLoader):
+    def __iter__(self):
+        return ((key.to(device), value.to(device)) for key, value in super().__iter__())
+
+
 # DataLoaders
-train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
-test_loader = DataLoader(test_data, batch_size=batch_size)
-val_loader = DataLoader(val_data, batch_size=batch_size)
+train_loader = DataLoaderWrapper(train_data, batch_size=batch_size, shuffle=True, pin_memory=True)
+test_loader = DataLoaderWrapper(test_data, batch_size=batch_size, pin_memory=True)
+val_loader = DataLoaderWrapper(val_data, batch_size=batch_size, pin_memory=True)
 
 # Client Data Loaders
 c_train_loaders = []
@@ -129,7 +138,7 @@ for i in range(num_clients):
     end_idx = (i + 1) * data_loader_size if i < num_clients - 1 else len(train_data)
 
     subset = Subset(train_data, list(range(start_idx, end_idx)))
-    loader = DataLoader(subset, batch_size=32, shuffle=True)
+    loader = DataLoader(subset, batch_size=batch_size, shuffle=True)
 
     c_train_loaders.append(loader)
 
@@ -207,6 +216,14 @@ def update_centralized_model(cent_model, models, num_clients, ranked_layers, k):
     target_state_dict = cent_model.state_dict()
     temp_state_dict = cent_model.state_dict()
 
+    list = []
+    for i in range(num_clients):
+        model_name = "model" + str(i)
+        list.append(ranked_layers[model_name][:k])
+
+    layers = reduce(np.intersect1d, list)
+    # print(layers)
+
     for key in target_state_dict:
         if target_state_dict[key].data.dtype == torch.float32:
             target_state_dict[key].data.fill_(0.)
@@ -214,12 +231,8 @@ def update_centralized_model(cent_model, models, num_clients, ranked_layers, k):
                 model_name = "model" + str(i)
                 model = models[model_name]
                 state_dict = model.state_dict()
-                layers = ranked_layers[model_name][:k]
-                print("im here!!")
-                print(layers)
+                target_state_dict[key].data += state_dict[key].data.clone() / num_clients
                 if key[:14] in layers:
-                    print("Reached Here!!")
-                    target_state_dict[key].data += state_dict[key].data.clone() / num_clients
                     if i == 0:
                         target_state_dict[key].grad = (state_dict[key].data.clone() - temp_state_dict[
                             key].data.clone()) / num_clients
@@ -240,9 +253,10 @@ def get_ranked_layers(clients, num_clients, c_train_loaders):
             layers.append(key[:14])
     # print(layers)
     # print(len(layers))
-    for no in range(num_clients):
+    for no in tqdm(range(num_clients)):
         model_name = "model" + str(no)
         model = clients[model_name]
+        model.eval()
         target_layers = [[model.model[0].conv[0]], [model.model[0].conv[1]],
                          [model.model[1].conv[0]], [model.model[1].conv[1]],
                          [model.model[1].conv[3]], [model.model[1].conv[4]], [model.model[2].conv[0]],
@@ -344,6 +358,8 @@ def train_clients(num_clients, server, models, optimizers, criterions):
                 valida_loss_c3.append(val_loss)
                 traini_loss_c3.append(running_loss / len(c_train_loaders[i]))
 
+    return models
+
 
 # Updating Client Models
 def update_client_models(cent_model, models, num_clients):
@@ -362,22 +378,21 @@ models, optimizers, criterions = get_client_models(num_clients)
 # Centralized Model
 cent_model = MobileNetV2(2).to(device)
 cent_optimizier = optim.Adagrad(cent_model.parameters(), lr=clr)
-ranked_layers = get_ranked_layers(models, num_clients, c_train_loaders)
-cent_model = update_centralized_model(cent_model, models, num_clients, ranked_layers, k)
-num_communications = 9
+num_communications = 10
 
 print("---Centralized Model---")
-acc, f1_sc, auroc = get_accuracy(cent_model, test_loader)
-print("Communication", 1, "| Test Accuracy =", acc, "| F1-Score =", f1_sc, "| Auroc Score =", auroc)
 
 for i in range(num_communications):
+    cent_model.train()
     models = update_client_models(cent_model, models, num_clients)
-    train_clients(num_clients, cent_model, models, optimizers, criterions)
-    ranked_layers = get_ranked_layers(models, num_clients, c_train_loaders)
-    cent_model = update_centralized_model(cent_model, models, num_clients, ranked_layers, k)
+    models = train_clients(num_clients, cent_model, models, optimizers, criterions)
+    ranked_client_layers = get_ranked_layers(models, num_clients, c_train_loaders)
+    cent_model = update_centralized_model(cent_model, models, num_clients, ranked_client_layers, k)
     cent_optimizier.step()
     acc, f1_sc, auroc = get_accuracy(cent_model, test_loader)
-    print("Communication", i + 2, "| Test Accuracy =", acc, "| F1-Score =", f1_sc, "| Auroc Score =", auroc)
+    print("Communication", i + 1, "| Test Accuracy =", acc, "| F1-Score =", f1_sc, "| Auroc Score =", auroc)
+
+models = update_client_models(cent_model, models, num_clients)
 
 print("---Client Models---")
 for i in range(num_clients):
