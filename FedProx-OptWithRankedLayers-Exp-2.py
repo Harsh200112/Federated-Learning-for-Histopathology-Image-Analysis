@@ -284,11 +284,10 @@ def get_ranked_layers(clients, num_clients, c_train_loaders, top_ranks):
                         break
                 break
             ranked_layers.append((mse, layers[layer_no]))
-            ranked_layers.sort(reverse=True)
-
             layer_no += 1
         # print(ranked_layers)
         # print()
+        ranked_layers.sort(reverse=True)
         model_ranked_layers[model_name] = [t[1] for t in ranked_layers]
 
     list = []
