@@ -55,6 +55,9 @@ model.load_state_dict(torch.load('Trained Weights/proxopt_corr_trained_weights.p
 
 print(model)
 
+for (name1, param1), (name2, param2) in zip(model.named_parameters(), model.named_parameters()):
+    print(name1, name2)
+
 # print(model.state_dict().keys())
 #
 # layers = []

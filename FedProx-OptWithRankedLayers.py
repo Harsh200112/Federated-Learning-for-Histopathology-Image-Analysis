@@ -119,15 +119,10 @@ train_data, x_data = train_test_ds(dataset)
 test_data, val_data = train_test_ds(x_data, 1 / 3)
 
 
-class DataLoaderWrapper(DataLoader):
-    def __iter__(self):
-        return ((key.to(device), value.to(device)) for key, value in super().__iter__())
-
-
 # DataLoaders
-train_loader = DataLoaderWrapper(train_data, batch_size=batch_size, shuffle=True, pin_memory=True)
-test_loader = DataLoaderWrapper(test_data, batch_size=batch_size, pin_memory=True)
-val_loader = DataLoaderWrapper(val_data, batch_size=batch_size, pin_memory=True)
+train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, pin_memory=True)
+test_loader = DataLoader(test_data, batch_size=batch_size, pin_memory=True)
+val_loader = DataLoader(val_data, batch_size=batch_size, pin_memory=True)
 
 # Client Data Loaders
 c_train_loaders = []
@@ -194,7 +189,7 @@ def get_client_models(num_clients):
 
 
 # Validation Loss Calculation
-def get_val_loss(model, criterion, data, server):
+def get_val_loss(model, criterion, data, server, ranked_layers):
     model.eval()
     with torch.no_grad():
         val_loss = 0.0
@@ -205,23 +200,17 @@ def get_val_loss(model, criterion, data, server):
             scores = model(x)
             val_loss += criterion(scores, y)
 
-            for param1, param2 in zip(model.parameters(), server.parameters()):
-                val_loss += (mu / 2) * torch.norm((param1.data - param2.data), p=2)
+            for (name1, param1), (name2, param2) in zip(model.named_parameters(), server.named_parameters()):
+                if name1[:14] in ranked_layers:
+                    val_loss += (mu / 2) * torch.norm((param1.data - param2.data), p=2)
 
     return val_loss.item() / len(data)
 
 
 # Setting the Main Model Parameters
-def update_centralized_model(cent_model, models, num_clients, ranked_layers, k):
+def update_centralized_model(cent_model, models, num_clients, layers):
     target_state_dict = cent_model.state_dict()
     temp_state_dict = cent_model.state_dict()
-
-    list = []
-    for i in range(num_clients):
-        model_name = "model" + str(i)
-        list.append(ranked_layers[model_name][:k])
-
-    layers = reduce(np.intersect1d, list)
     # print(layers)
 
     for key in target_state_dict:
@@ -245,7 +234,7 @@ def update_centralized_model(cent_model, models, num_clients, ranked_layers, k):
 
 
 # Finding the Rank of Layers important in predicting the final outcome
-def get_ranked_layers(clients, num_clients, c_train_loaders):
+def get_ranked_layers(clients, num_clients, c_train_loaders, top_ranks):
     model_ranked_layers = {}
     layers = []
     for key in clients["model0"].state_dict():
@@ -272,10 +261,12 @@ def get_ranked_layers(clients, num_clients, c_train_loaders):
             for x, y in c_train_loaders[no]:
                 x = x.to(device)
                 y = y.to(device)
+
                 for i in range(batch_size):
                     for l, k in c_train_loaders[no]:
                         l = l.to(device)
                         k = k.to(device)
+
                         for j in range(batch_size):
                             cam = GradCAM(model=model, target_layers=layer)
                             target1 = [ClassifierOutputTarget(y[i])]
@@ -300,7 +291,14 @@ def get_ranked_layers(clients, num_clients, c_train_loaders):
         # print()
         model_ranked_layers[model_name] = [t[1] for t in ranked_layers]
 
-    return model_ranked_layers
+    list = []
+    for i in range(num_clients):
+        model_name = "model" + str(i)
+        list.append(model_ranked_layers[model_name][:top_ranks])
+
+    layers = reduce(np.intersect1d, list)
+
+    return layers
 
 
 traini_loss_c1 = []
@@ -312,7 +310,7 @@ valida_loss_c3 = []
 
 
 # Training Clients
-def train_clients(num_clients, server, models, optimizers, criterions):
+def train_clients(num_clients, server, models, optimizers, criterions, ranked_layers):
     for i in range(num_clients):
         model_name = "model" + str(i)
         optimizer_name = "optim" + str(i)
@@ -335,8 +333,9 @@ def train_clients(num_clients, server, models, optimizers, criterions):
                 loss = criterion(scores, targets)
 
                 # Add the FedProx regularization term
-                for param1, param2 in zip(model.parameters(), server.parameters()):
-                    loss += (mu / 2) * torch.norm((param1.data - param2.data), p=2)
+                for (name1, param1), (name2, param2) in zip(model.named_parameters(), server.named_parameters()):
+                    if name1[:14] in ranked_layers:
+                        loss += (mu / 2) * torch.norm((param1.data - param2.data), p=2)
 
                 # Backward Prop
                 loss.backward()
@@ -344,7 +343,7 @@ def train_clients(num_clients, server, models, optimizers, criterions):
 
                 running_loss += loss.item()
 
-            val_loss = get_val_loss(model, criterion, val_loader, server)
+            val_loss = get_val_loss(model, criterion, val_loader, server, ranked_layers)
 
             if i == 0:
                 valida_loss_c1.append(val_loss)
@@ -381,13 +380,14 @@ cent_optimizier = optim.Adagrad(cent_model.parameters(), lr=clr)
 num_communications = 10
 
 print("---Centralized Model---")
+ranked_client_layers = []
 
 for i in range(num_communications):
     cent_model.train()
     models = update_client_models(cent_model, models, num_clients)
-    models = train_clients(num_clients, cent_model, models, optimizers, criterions)
-    ranked_client_layers = get_ranked_layers(models, num_clients, c_train_loaders)
-    cent_model = update_centralized_model(cent_model, models, num_clients, ranked_client_layers, k)
+    models = train_clients(num_clients, cent_model, models, optimizers, criterions, ranked_client_layers)
+    ranked_client_layers = get_ranked_layers(models, num_clients, c_train_loaders, k)
+    cent_model = update_centralized_model(cent_model, models, num_clients, ranked_client_layers)
     cent_optimizier.step()
     acc, f1_sc, auroc = get_accuracy(cent_model, test_loader)
     print("Communication", i + 1, "| Test Accuracy =", acc, "| F1-Score =", f1_sc, "| Auroc Score =", auroc)
