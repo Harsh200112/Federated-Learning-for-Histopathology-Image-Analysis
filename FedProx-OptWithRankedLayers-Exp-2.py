@@ -301,6 +301,8 @@ def get_ranked_layers(clients, num_clients, c_train_loaders, top_ranks):
     return layers
 
 
+overall_train_loss = []
+overall_val_loss = []
 traini_loss_c1 = []
 valida_loss_c1 = []
 traini_loss_c2 = []
@@ -344,6 +346,8 @@ def train_clients(num_clients, server, models, optimizers, criterions, ranked_la
                 running_loss += loss.item()
 
             val_loss = get_val_loss(model, criterion, val_loader, server, ranked_layers)
+            overall_train_loss.append(running_loss/len(c_train_loaders[i]))
+            overall_val_loss.append(val_loss)
 
             if i == 0:
                 valida_loss_c1.append(val_loss)
@@ -394,19 +398,23 @@ for i in range(num_communications):
 
 models = update_client_models(cent_model, models, num_clients)
 
+print("\n")
 print("---Client Models---")
 for i in range(num_clients):
     model_name = "model" + str(i)
     acc, f1_sc, auroc = get_accuracy(models[model_name], test_loader)
     print(f"Test Accuracy for Client-{i + 1} is:-", acc)
     print(f"F1-Score for Client-{i + 1} is:-", f1_sc)
-    print(f"Auroc Score for Client-{i + 1} is:-", auroc)
+    print(f"Auroc Score for Client-{i + 1} is:-", auroc, "\n")
+
+print("Overall Training Loss:-", overall_train_loss)
+print("Overall Validation Loss:-", overall_val_loss, "\n")
 
 print("Training Loss Client1:-", traini_loss_c1)
-print("Validation Loss Client1:-", valida_loss_c1)
+print("Validation Loss Client1:-", valida_loss_c1, "\n")
 
 print("Training Loss Client2:-", traini_loss_c2)
-print("Validation Loss Client2:-", valida_loss_c2)
+print("Validation Loss Client2:-", valida_loss_c2, "\n")
 
 print("Training Loss Client3:-", traini_loss_c3)
 print("Validation Loss Client3:-", valida_loss_c3)
