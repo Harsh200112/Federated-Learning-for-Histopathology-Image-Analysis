@@ -27,7 +27,7 @@ clr = 3e-4
 c_epochs = 10
 num_clients = 3
 mu = 0.01
-k = 8
+k = 10
 
 # Preprocessing
 transforms = transforms.Compose([
@@ -208,10 +208,17 @@ def get_val_loss(model, criterion, data, server, ranked_layers):
 
 
 # Setting the Main Model Parameters
-def update_centralized_model(cent_model, models, num_clients):
+def update_centralized_model(cent_model, models, num_clients, model_ranked_layers):
     target_state_dict = cent_model.state_dict()
     temp_state_dict = cent_model.state_dict()
-    # print(layers)
+
+    list = []
+    for i in range(num_clients):
+        model_name = "model" + str(i)
+        list.append(model_ranked_layers[model_name])
+
+    layers = reduce(np.intersect1d, list)
+    print(layers)
 
     for key in target_state_dict:
         if target_state_dict[key].data.dtype == torch.float32:
@@ -220,14 +227,14 @@ def update_centralized_model(cent_model, models, num_clients):
                 model_name = "model" + str(i)
                 model = models[model_name]
                 state_dict = model.state_dict()
-
                 target_state_dict[key].data += state_dict[key].data.clone() / num_clients
-                if i == 0:
-                    target_state_dict[key].grad = (state_dict[key].data.clone() - temp_state_dict[
-                        key].data.clone()) / num_clients
-                else:
-                    target_state_dict[key].grad += (state_dict[key].data.clone() - temp_state_dict[
-                        key].data.clone()) / num_clients
+                if key[:14] in layers or key[:2] == 'fc':
+                    if i == 0:
+                        target_state_dict[key].grad = (state_dict[key].data.clone() - temp_state_dict[
+                            key].data.clone()) / num_clients
+                    else:
+                        target_state_dict[key].grad += (state_dict[key].data.clone() - temp_state_dict[
+                            key].data.clone()) / num_clients
 
     cent_model.load_state_dict(target_state_dict)
     return cent_model
@@ -288,16 +295,9 @@ def get_ranked_layers(clients, num_clients, c_train_loaders, top_ranks):
         # print(ranked_layers)
         # print()
         ranked_layers.sort(reverse=True)
-        model_ranked_layers[model_name] = [t[1] for t in ranked_layers]
+        model_ranked_layers[model_name] = [t[1] for t in ranked_layers][:top_ranks]
 
-    list = []
-    for i in range(num_clients):
-        model_name = "model" + str(i)
-        list.append(model_ranked_layers[model_name][:top_ranks])
-
-    layers = reduce(np.intersect1d, list)
-
-    return layers
+    return model_ranked_layers
 
 
 overall_train_loss = []
@@ -311,7 +311,7 @@ valida_loss_c3 = []
 
 
 # Training Clients
-def train_clients(num_clients, server, models, optimizers, criterions, ranked_layers):
+def train_clients(num_clients, server, models, optimizers, criterions, model_ranked_layers):
     for i in range(num_clients):
         model_name = "model" + str(i)
         optimizer_name = "optim" + str(i)
@@ -319,6 +319,7 @@ def train_clients(num_clients, server, models, optimizers, criterions, ranked_la
         model = models[model_name]
         optimizer = optimizers[optimizer_name]
         criterion = criterions[criterion_name]
+        ranked_layers = model_ranked_layers[model_name]
 
         for epoch in range(c_epochs):
             model.train()
@@ -336,6 +337,7 @@ def train_clients(num_clients, server, models, optimizers, criterions, ranked_la
                 # Add the FedProx regularization term
                 for (name1, param1), (name2, param2) in zip(model.named_parameters(), server.named_parameters()):
                     if name1[:14] in ranked_layers or name1[:2] == 'fc':
+                        # print("reached here!!", name1[:2])
                         loss += (mu / 2) * torch.norm((param1.data - param2.data), p=2)
 
                 # Backward Prop
@@ -379,18 +381,18 @@ models, optimizers, criterions = get_client_models(num_clients)
 
 # Centralized Model
 cent_model = MobileNetV2(2).to(device)
-cent_optimizier = optim.Adagrad(cent_model.parameters(), lr=clr)
+cent_optimizier = optim.Adam(cent_model.parameters(), lr=clr)
 num_communications = 10
 
 print("---Centralized Model---")
-ranked_client_layers = []
 
 for i in range(num_communications):
     cent_model.train()
     models = update_client_models(cent_model, models, num_clients)
-    models = train_clients(num_clients, cent_model, models, optimizers, criterions, ranked_client_layers)
     ranked_client_layers = get_ranked_layers(models, num_clients, c_train_loaders, k)
-    cent_model = update_centralized_model(cent_model, models, num_clients)
+    models = train_clients(num_clients, cent_model, models, optimizers, criterions, ranked_client_layers)
+    print(ranked_client_layers)
+    cent_model = update_centralized_model(cent_model, models, num_clients, ranked_client_layers)
     cent_optimizier.step()
     acc, f1_sc, auroc = get_accuracy(cent_model, test_loader)
     print("Communication", i + 1, "| Test Accuracy =", acc, "| F1-Score =", f1_sc, "| Auroc Score =", auroc)
@@ -404,8 +406,9 @@ for i in range(num_clients):
     acc, f1_sc, auroc = get_accuracy(models[model_name], test_loader)
     print(f"Test Accuracy for Client-{i + 1} is:-", acc)
     print(f"F1-Score for Client-{i + 1} is:-", f1_sc)
-    print(f"Auroc Score for Client-{i + 1} is:-", auroc, "\n")
+    print(f"Auroc Score for Client-{i + 1} is:-", auroc)
 
+print("\n")
 print("Overall Training Loss:-", overall_train_loss)
 print("Overall Validation Loss:-", overall_val_loss, "\n")
 

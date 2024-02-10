@@ -27,7 +27,7 @@ clr = 3e-4
 c_epochs = 10
 num_clients = 3
 mu = 0.01
-k = 8
+k = 10
 
 # Preprocessing
 transforms = transforms.Compose([
@@ -201,7 +201,7 @@ def get_val_loss(model, criterion, data, server, ranked_layers):
             val_loss += criterion(scores, y)
 
             for (name1, param1), (name2, param2) in zip(model.named_parameters(), server.named_parameters()):
-                if name1[:14] in ranked_layers:
+                if name1[:14] in ranked_layers or name1[:2] == 'fc':
                     val_loss += (mu / 2) * torch.norm((param1.data - param2.data), p=2)
 
     return val_loss.item() / len(data)
@@ -221,7 +221,7 @@ def update_centralized_model(cent_model, models, num_clients, layers):
                 model = models[model_name]
                 state_dict = model.state_dict()
                 target_state_dict[key].data += state_dict[key].data.clone() / num_clients
-                if key[:14] in layers:
+                if key[:14] in layers or key[:2] == 'fc':
                     if i == 0:
                         target_state_dict[key].grad = (state_dict[key].data.clone() - temp_state_dict[
                             key].data.clone()) / num_clients
@@ -335,7 +335,8 @@ def train_clients(num_clients, server, models, optimizers, criterions, ranked_la
 
                 # Add the FedProx regularization term
                 for (name1, param1), (name2, param2) in zip(model.named_parameters(), server.named_parameters()):
-                    if name1[:14] in ranked_layers:
+                    if name1[:14] in ranked_layers or name1[:2] == 'fc':
+                        # print("reached here!!", name1[:2])
                         loss += (mu / 2) * torch.norm((param1.data - param2.data), p=2)
 
                 # Backward Prop
@@ -390,6 +391,7 @@ for i in range(num_communications):
     models = update_client_models(cent_model, models, num_clients)
     models = train_clients(num_clients, cent_model, models, optimizers, criterions, ranked_client_layers)
     ranked_client_layers = get_ranked_layers(models, num_clients, c_train_loaders, k)
+    print(ranked_client_layers)
     cent_model = update_centralized_model(cent_model, models, num_clients, ranked_client_layers)
     cent_optimizier.step()
     acc, f1_sc, auroc = get_accuracy(cent_model, test_loader)

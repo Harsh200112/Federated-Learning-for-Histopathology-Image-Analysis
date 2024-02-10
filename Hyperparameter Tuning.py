@@ -1,11 +1,13 @@
 # Importing Libraries
 import torch
+import optuna
 import numpy as np
 import torch.nn as nn
 import torchmetrics
 from tqdm import tqdm
 from functools import reduce
 import torch.optim as optim
+from optuna.trial import TrialState
 from torchvision.transforms import transforms
 from torch.utils.data import DataLoader, Subset
 from sklearn.model_selection import train_test_split
@@ -20,14 +22,11 @@ torch.backends.cudnn.allow_tf32 = True
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(device)
 
-# Hyperparameters
+# Fixed Parameters
 image_size = 224
-batch_size = 32
-clr = 3e-4
 c_epochs = 10
 num_clients = 3
-mu = 0.01
-k = 8
+batch_size = 32
 
 # Preprocessing
 transforms = transforms.Compose([
@@ -167,7 +166,7 @@ def get_accuracy(model, data):
 
 
 # Creating Different Client Models
-def get_client_models(num_clients):
+def get_client_models(num_clients, clr):
     models = dict()
     optimizers = dict()
     criterions = dict()
@@ -189,7 +188,7 @@ def get_client_models(num_clients):
 
 
 # Validation Loss Calculation
-def get_val_loss(model, criterion, data, server, ranked_layers):
+def get_val_loss(model, criterion, data, server, ranked_layers, mu):
     model.eval()
     with torch.no_grad():
         val_loss = 0.0
@@ -201,14 +200,14 @@ def get_val_loss(model, criterion, data, server, ranked_layers):
             val_loss += criterion(scores, y)
 
             for (name1, param1), (name2, param2) in zip(model.named_parameters(), server.named_parameters()):
-                if name1[:14] in ranked_layers or name1[:2] == 'fc':
+                if name1[:14] in ranked_layers:
                     val_loss += (mu / 2) * torch.norm((param1.data - param2.data), p=2)
 
     return val_loss.item() / len(data)
 
 
 # Setting the Main Model Parameters
-def update_centralized_model(cent_model, models, num_clients):
+def update_centralized_model(cent_model, models, num_clients, layers):
     target_state_dict = cent_model.state_dict()
     temp_state_dict = cent_model.state_dict()
     # print(layers)
@@ -220,14 +219,14 @@ def update_centralized_model(cent_model, models, num_clients):
                 model_name = "model" + str(i)
                 model = models[model_name]
                 state_dict = model.state_dict()
-
                 target_state_dict[key].data += state_dict[key].data.clone() / num_clients
-                if i == 0:
-                    target_state_dict[key].grad = (state_dict[key].data.clone() - temp_state_dict[
-                        key].data.clone()) / num_clients
-                else:
-                    target_state_dict[key].grad += (state_dict[key].data.clone() - temp_state_dict[
-                        key].data.clone()) / num_clients
+                if key[:14] in layers:
+                    if i == 0:
+                        target_state_dict[key].grad = (state_dict[key].data.clone() - temp_state_dict[
+                            key].data.clone()) / num_clients
+                    else:
+                        target_state_dict[key].grad += (state_dict[key].data.clone() - temp_state_dict[
+                            key].data.clone()) / num_clients
 
     cent_model.load_state_dict(target_state_dict)
     return cent_model
@@ -311,7 +310,7 @@ valida_loss_c3 = []
 
 
 # Training Clients
-def train_clients(num_clients, server, models, optimizers, criterions, ranked_layers):
+def train_clients(num_clients, server, models, optimizers, criterions, ranked_layers, mu):
     for i in range(num_clients):
         model_name = "model" + str(i)
         optimizer_name = "optim" + str(i)
@@ -335,7 +334,7 @@ def train_clients(num_clients, server, models, optimizers, criterions, ranked_la
 
                 # Add the FedProx regularization term
                 for (name1, param1), (name2, param2) in zip(model.named_parameters(), server.named_parameters()):
-                    if name1[:14] in ranked_layers or name1[:2] == 'fc':
+                    if name1[:14] in ranked_layers:
                         loss += (mu / 2) * torch.norm((param1.data - param2.data), p=2)
 
                 # Backward Prop
@@ -344,7 +343,7 @@ def train_clients(num_clients, server, models, optimizers, criterions, ranked_la
 
                 running_loss += loss.item()
 
-            val_loss = get_val_loss(model, criterion, val_loader, server, ranked_layers)
+            val_loss = get_val_loss(model, criterion, val_loader, server, ranked_layers, mu)
             overall_train_loss.append(running_loss/len(c_train_loaders[i]))
             overall_val_loss.append(val_loss)
 
@@ -374,46 +373,58 @@ def update_client_models(cent_model, models, num_clients):
     return models
 
 
-# Client Models
-models, optimizers, criterions = get_client_models(num_clients)
+def objective(trial):
 
-# Centralized Model
-cent_model = MobileNetV2(2).to(device)
-cent_optimizier = optim.Adagrad(cent_model.parameters(), lr=clr)
-num_communications = 10
+    # Centralized Model
+    cent_model = MobileNetV2(2).to(device)
 
-print("---Centralized Model---")
-ranked_client_layers = []
+    # Hyperparameters
+    optimizer_name = trial.suggest_categorical("optimizer", ["Adam", "Adagrad", "SGD"])
+    clr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
+    models, optimizers, criterions = get_client_models(num_clients, clr)
 
-for i in range(num_communications):
-    cent_model.train()
-    models = update_client_models(cent_model, models, num_clients)
-    models = train_clients(num_clients, cent_model, models, optimizers, criterions, ranked_client_layers)
-    ranked_client_layers = get_ranked_layers(models, num_clients, c_train_loaders, k)
-    cent_model = update_centralized_model(cent_model, models, num_clients)
-    cent_optimizier.step()
-    acc, f1_sc, auroc = get_accuracy(cent_model, test_loader)
-    print("Communication", i + 1, "| Test Accuracy =", acc, "| F1-Score =", f1_sc, "| Auroc Score =", auroc)
+    cent_optimizer = getattr(optim, optimizer_name)(cent_model.parameters(), lr=clr)
+    num_communications = trial.suggest_int("num_communications", 10, 25)
+    mu = trial.suggest_float("mu", 1e-3, 1e-1, log=True)
+    k = trial.suggest_int("k", 2, 12)
 
-models = update_client_models(cent_model, models, num_clients)
+    # print("---Centralized Model---")
+    ranked_client_layers = []
 
-print("\n")
-print("---Client Models---")
-for i in range(num_clients):
-    model_name = "model" + str(i)
-    acc, f1_sc, auroc = get_accuracy(models[model_name], test_loader)
-    print(f"Test Accuracy for Client-{i + 1} is:-", acc)
-    print(f"F1-Score for Client-{i + 1} is:-", f1_sc)
-    print(f"Auroc Score for Client-{i + 1} is:-", auroc, "\n")
+    for i in range(num_communications):
+        cent_model.train()
+        models = update_client_models(cent_model, models, num_clients)
+        models = train_clients(num_clients, cent_model, models, optimizers, criterions, ranked_client_layers, mu)
+        ranked_client_layers = get_ranked_layers(models, num_clients, c_train_loaders, k)
+        cent_model = update_centralized_model(cent_model, models, num_clients, ranked_client_layers)
+        cent_optimizer.step()
+        acc, f1_sc, auroc = get_accuracy(cent_model, test_loader)
 
-print("Overall Training Loss:-", overall_train_loss)
-print("Overall Validation Loss:-", overall_val_loss, "\n")
+        trial.report(f1_sc, i)
+        trial.report(auroc, i)
 
-print("Training Loss Client1:-", traini_loss_c1)
-print("Validation Loss Client1:-", valida_loss_c1, "\n")
+        if trial.should_prune():
+            raise optuna.exceptions.TrialPruned()
 
-print("Training Loss Client2:-", traini_loss_c2)
-print("Validation Loss Client2:-", valida_loss_c2, "\n")
+    return f1_sc, auroc
 
-print("Training Loss Client3:-", traini_loss_c3)
-print("Validation Loss Client3:-", valida_loss_c3)
+
+study = optuna.create_study(direction="maximize")
+study.optimize(objective, n_trials=100)
+
+pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
+complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
+
+print("Study statistics: ")
+print("  Number of finished trials: ", len(study.trials))
+print("  Number of pruned trials: ", len(pruned_trials))
+print("  Number of complete trials: ", len(complete_trials))
+
+print("Best trial:")
+trial = study.best_trial
+
+print("  Value: ", trial.value)
+
+print("  Params: ")
+for key, value in trial.params.items():
+    print("    {}: {}".format(key, value))
