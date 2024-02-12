@@ -6,12 +6,10 @@ import torchmetrics
 from tqdm import tqdm
 from functools import reduce
 import torch.optim as optim
-from torchvision.transforms import transforms
-from torch.utils.data import DataLoader, Subset
-from sklearn.model_selection import train_test_split
+from MobileNetModel import MobileNetV2
 from pytorch_grad_cam import GradCAM
+from DataLoaders import c_val_loaders, c_train_loaders, test_loader
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
-from torchvision import datasets
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -28,114 +26,6 @@ c_epochs = 10
 num_clients = 3
 mu = 0.01
 k = 10
-
-# Preprocessing
-transforms = transforms.Compose([
-    transforms.Resize((image_size, image_size)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
-
-dataset = datasets.ImageFolder('Overall-Dataset', transform=transforms)
-
-classes = dataset.classes
-
-
-# Model
-class ConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1):
-        super(ConvBlock, self).__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, 3, stride, 1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU6(inplace=True)
-        )
-
-    def forward(self, x):
-        return self.conv(x)
-
-
-class MobileNetV2(nn.Module):
-    def __init__(self, num_classes=2):
-        super(MobileNetV2, self).__init__()
-        self.model = nn.Sequential(
-            ConvBlock(3, 32, 2),
-            InvertedResidual(32, 16, 1, 1),
-            InvertedResidual(16, 24, 2, 3),
-            ConvBlock(24, 128, 2),
-        )
-
-        self.avgpool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Linear(128, num_classes)
-
-    def forward(self, x):
-        x = self.model(x)
-        x = self.avgpool(x)
-        x = x.view(x.size(0), -1)
-        x = self.fc(x)
-        return x
-
-
-class InvertedResidual(nn.Module):
-    def __init__(self, in_channels, out_channels, t, stride):
-        super(InvertedResidual, self).__init__()
-        self.stride = stride
-        self.use_res_connect = self.stride == 1 and in_channels == out_channels
-
-        # Define the layers
-        layers = []
-        if t != 1:
-            layers.append(nn.Conv2d(in_channels, in_channels * t, 1, 1, 0, bias=False))
-            layers.append(nn.BatchNorm2d(in_channels * t))
-            layers.append(nn.ReLU6(inplace=True))
-
-        layers.extend([
-            nn.Conv2d(in_channels * t, in_channels * t, 3, stride, 1, groups=in_channels * t, bias=False),
-            nn.BatchNorm2d(in_channels * t),
-            nn.ReLU6(inplace=True),
-            nn.Conv2d(in_channels * t, out_channels, 1, 1, 0, bias=False),
-            nn.BatchNorm2d(out_channels),
-        ])
-
-        self.conv = nn.Sequential(*layers)
-
-    def forward(self, x):
-        if self.use_res_connect:
-            return x + self.conv(x)
-        else:
-            return self.conv(x)
-
-
-# Train, Test, Validation Splitting
-def train_test_ds(data, test_split=0.3):
-    train_idx, val_idx = train_test_split(list(range(len(data))), test_size=test_split)
-    train_data = Subset(data, train_idx)
-    test_data = Subset(data, val_idx)
-
-    return train_data, test_data
-
-
-train_data, x_data = train_test_ds(dataset)
-test_data, val_data = train_test_ds(x_data, 1 / 3)
-
-
-# DataLoaders
-train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, pin_memory=True)
-test_loader = DataLoader(test_data, batch_size=batch_size, pin_memory=True)
-val_loader = DataLoader(val_data, batch_size=batch_size, pin_memory=True)
-
-# Client Data Loaders
-c_train_loaders = []
-data_loader_size = len(train_data) // num_clients
-
-for i in range(num_clients):
-    start_idx = i * data_loader_size
-    end_idx = (i + 1) * data_loader_size if i < num_clients - 1 else len(train_data)
-
-    subset = Subset(train_data, list(range(start_idx, end_idx)))
-    loader = DataLoader(subset, batch_size=batch_size, shuffle=True)
-
-    c_train_loaders.append(loader)
 
 
 # Accuracy, Auroc, F1-Scre Calculation
@@ -346,7 +236,7 @@ def train_clients(num_clients, server, models, optimizers, criterions, model_ran
 
                 running_loss += loss.item()
 
-            val_loss = get_val_loss(model, criterion, val_loader, server, ranked_layers)
+            val_loss = get_val_loss(model, criterion, c_val_loaders[i], server, ranked_layers)
             overall_train_loss.append(running_loss/len(c_train_loaders[i]))
             overall_val_loss.append(val_loss)
 
